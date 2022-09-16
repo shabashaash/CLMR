@@ -9,6 +9,20 @@ from typing import Tuple
 from tqdm import tqdm
 
 
+
+def accuracy_f(output, target, topk=(1,2,5)):
+    maxk = max(topk)
+#     batch_size = target.size(0)
+
+    _, pred = output.topk(maxk, dim=1, largest=True, sorted=True)
+#     print(pred.shape)
+    ret = []
+    for k in topk:
+        correct = (target * torch.zeros_like(target).scatter(1, pred[:, :k], 1)).float()
+        ret.append( (correct.sum() / target.sum()).item() )
+    return ret[0]
+
+
 class LinearEvaluation(LightningModule):
     def __init__(self, args, encoder: nn.Module, hidden_dim: int, output_dim: int):
         super().__init__()
@@ -28,12 +42,13 @@ class LinearEvaluation(LightningModule):
             self.model = nn.Sequential(nn.Linear(self.hidden_dim, self.output_dim))
         self.criterion = self.configure_criterion()
 
-        self.accuracy = torchmetrics.Accuracy()
-        self.average_precision = torchmetrics.AveragePrecision(pos_label=1)
+#         self.accuracy = accuracy_f()#torchmetrics.Accuracy()
+#         self.average_precision = torchmetrics.AveragePrecision(pos_label=1)
 
     def forward(self, x: Tensor, y: Tensor) -> Tuple[Tensor, Tensor]:
         preds = self._forward_representations(x, y)
         loss = self.criterion(preds, y)
+#         print(preds, y, "PREDSYF")
         return loss, preds
 
     def _forward_representations(self, x: Tensor, y: Tensor) -> Tensor:
@@ -51,8 +66,11 @@ class LinearEvaluation(LightningModule):
     def training_step(self, batch, _) -> Tensor:
         x, y = batch
         loss, preds = self.forward(x, y)
-
-        self.log("Train/accuracy", self.accuracy(preds, y))
+#         print(preds, y, "PREDSYTRAIN")
+        y_bool = y > 0.5
+        self.log("Valid/topk1", accuracy_f(preds, y_bool,(1,)))
+        self.log("Valid/topk2", accuracy_f(preds, y_bool,(2,)))
+        self.log("Valid/accuracy", accuracy_f(preds, y_bool,(5,)))
         # self.log("Train/pr_auc", self.average_precision(preds, y))
         self.log("Train/loss", loss)
         return loss
@@ -60,14 +78,17 @@ class LinearEvaluation(LightningModule):
     def validation_step(self, batch, _) -> Tensor:
         x, y = batch
         loss, preds = self.forward(x, y)
-
-        self.log("Valid/accuracy", self.accuracy(preds, y))
+#         print(preds, y, "PREDSYVAL")
+        y_bool = y > 0.5
+        self.log("Valid/topk1", accuracy_f(preds, y_bool,(1,)))
+        self.log("Valid/topk2", accuracy_f(preds, y_bool,(2,)))
+        self.log("Valid/accuracy", accuracy_f(preds, y_bool,(5,)))
         # self.log("Valid/pr_auc", self.average_precision(preds, y))
         self.log("Valid/loss", loss)
         return loss
 
     def configure_criterion(self) -> nn.Module:
-        if self.hparams.dataset in ["magnatagatune", "msd"]:
+        if self.hparams.dataset in ["magnatagatune", "msd", "playlists"]:
             criterion = nn.BCEWithLogitsLoss()
         else:
             criterion = nn.CrossEntropyLoss()
