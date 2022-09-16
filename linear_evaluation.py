@@ -19,6 +19,9 @@ from clmr.utils import (
 )
 
 
+
+
+
 if __name__ == "__main__":
 
     parser = argparse.ArgumentParser(description="SimCLR")
@@ -39,42 +42,46 @@ if __name__ == "__main__":
 
     # ------------
     # dataloaders
-    # ------------
-    train_dataset = get_dataset(args.dataset, args.dataset_dir, subset="train")
-    valid_dataset = get_dataset(args.dataset, args.dataset_dir, subset="valid")
+#     ------------
+    if not args.finetuner_checkpoint_path:
+        train_dataset = get_dataset(args.dataset, args.dataset_dir, subset="full")
+        valid_dataset = get_dataset(args.dataset, args.dataset_dir, subset="full")
     test_dataset = get_dataset(args.dataset, args.dataset_dir, subset="test")
+    
+    
+    if not args.finetuner_checkpoint_path:
+        contrastive_train_dataset = ContrastiveDataset(
+            train_dataset,
+            input_shape=(1, args.audio_length),
+            transform=Compose(train_transform),
+        )
 
-    contrastive_train_dataset = ContrastiveDataset(
-        train_dataset,
-        input_shape=(1, args.audio_length),
-        transform=Compose(train_transform),
-    )
-
-    contrastive_valid_dataset = ContrastiveDataset(
-        valid_dataset,
-        input_shape=(1, args.audio_length),
-        transform=Compose(train_transform),
-    )
+        contrastive_valid_dataset = ContrastiveDataset(
+            valid_dataset,
+            input_shape=(1, args.audio_length),
+            transform=Compose(train_transform),
+        )
 
     contrastive_test_dataset = ContrastiveDataset(
         test_dataset,
         input_shape=(1, args.audio_length),
         transform=None,
     )
+    
+    if not args.finetuner_checkpoint_path:
+        train_loader = DataLoader(
+            contrastive_train_dataset,
+            batch_size=args.finetuner_batch_size,
+            num_workers=args.workers,
+            shuffle=True,
+        )
 
-    train_loader = DataLoader(
-        contrastive_train_dataset,
-        batch_size=args.finetuner_batch_size,
-        num_workers=args.workers,
-        shuffle=True,
-    )
-
-    valid_loader = DataLoader(
-        contrastive_valid_dataset,
-        batch_size=args.finetuner_batch_size,
-        num_workers=args.workers,
-        shuffle=False,
-    )
+        valid_loader = DataLoader(
+            contrastive_valid_dataset,
+            batch_size=args.finetuner_batch_size,
+            num_workers=args.workers,
+            shuffle=False,
+        )
 
     test_loader = DataLoader(
         contrastive_test_dataset,
@@ -89,66 +96,77 @@ if __name__ == "__main__":
     encoder = SampleCNN(
         strides=[3, 3, 3, 3, 3, 3, 3, 3, 3],
         supervised=args.supervised,
-        out_dim=train_dataset.n_classes,
+        out_dim=test_dataset.n_classes,
     )
 
     n_features = encoder.fc.in_features  # get dimensions of last fully-connected layer
 
-    state_dict = load_encoder_checkpoint(args.checkpoint_path, train_dataset.n_classes)
+    state_dict = load_encoder_checkpoint(args.checkpoint_path, test_dataset.n_classes)
     encoder.load_state_dict(state_dict)
 
     cl = ContrastiveLearning(args, encoder)
     cl.eval()
     cl.freeze()
-
+    
+    
+    
+    
+    
+    
     module = LinearEvaluation(
         args,
-        cl.encoder,
+        encoder,
         hidden_dim=n_features,
-        output_dim=train_dataset.n_classes,
+        output_dim=test_dataset.n_classes,
     )
+    
+    if not args.finetuner_checkpoint_path:
+        train_representations_dataset = module.extract_representations(train_loader)
+        train_loader = DataLoader(
+            train_representations_dataset,
+            batch_size=args.batch_size,
+            num_workers=args.workers,
+            shuffle=True,
+        )
 
-    train_representations_dataset = module.extract_representations(train_loader)
-    train_loader = DataLoader(
-        train_representations_dataset,
-        batch_size=args.batch_size,
-        num_workers=args.workers,
-        shuffle=True,
-    )
-
-    valid_representations_dataset = module.extract_representations(valid_loader)
-    valid_loader = DataLoader(
-        valid_representations_dataset,
-        batch_size=args.batch_size,
-        num_workers=args.workers,
-        shuffle=False,
-    )
+        valid_representations_dataset = module.extract_representations(valid_loader)
+        valid_loader = DataLoader(
+            valid_representations_dataset,
+            batch_size=args.batch_size,
+            num_workers=args.workers,
+            shuffle=False,
+        )
 
     if args.finetuner_checkpoint_path:
         state_dict = load_finetuner_checkpoint(args.finetuner_checkpoint_path)
         module.model.load_state_dict(state_dict)
     else:
         early_stop_callback = EarlyStopping(
-            monitor="Valid/loss", patience=10, verbose=False, mode="min"
+            monitor="Valid/loss", patience=20, verbose=True, mode="min"
         )
-
+        print("INIT TRAININ")
         trainer = Trainer.from_argparse_args(
             args,
             logger=TensorBoardLogger(
                 "runs", name="CLMRv2-eval-{}".format(args.dataset)
             ),
-            max_epochs=args.finetuner_max_epochs,
+            max_epochs=-1,#args.finetuner_max_epochs,
             callbacks=[early_stop_callback],
+            accelerator='gpu', 
+            log_every_n_steps=1,
+#             check_val_every_n_epoch=5
+            
         )
+        print("START TRAININ")
         trainer.fit(module, train_loader, valid_loader)
-
-    device = "cuda:0" if args.gpus else "cpu"
+    print("AT EVAL")
+#     device = "cuda:0" if args.gpus else "cpu"
     results = evaluate(
         module.encoder,
         module.model,
         contrastive_test_dataset,
         args.dataset,
         args.audio_length,
-        device=device,
+        device="cuda:0",
     )
     print(results)
