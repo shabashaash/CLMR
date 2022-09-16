@@ -4,7 +4,7 @@ from pytorch_lightning.callbacks.early_stopping import EarlyStopping
 from pytorch_lightning import Trainer
 from pytorch_lightning.loggers import TensorBoardLogger
 from torch.utils.data import DataLoader
-
+import torch
 # Audio Augmentations
 from torchaudio_augmentations import (
     RandomApply,
@@ -25,6 +25,8 @@ from clmr.evaluation import evaluate
 from clmr.models import SampleCNN
 from clmr.modules import ContrastiveLearning, SupervisedLearning
 from clmr.utils import yaml_config_hook
+
+
 
 
 if __name__ == "__main__":
@@ -73,8 +75,8 @@ if __name__ == "__main__":
     # ------------
     # dataloaders
     # ------------
-    train_dataset = get_dataset(args.dataset, args.dataset_dir, subset="train")
-    valid_dataset = get_dataset(args.dataset, args.dataset_dir, subset="valid")
+    train_dataset = get_dataset(args.dataset, args.dataset_dir, subset="full")
+    valid_dataset = get_dataset(args.dataset, args.dataset_dir, subset="full")
     contrastive_train_dataset = ContrastiveDataset(
         train_dataset,
         input_shape=(1, args.audio_length),
@@ -115,20 +117,70 @@ if __name__ == "__main__":
         supervised=args.supervised,
         out_dim=train_dataset.n_classes,
     )
-
+#     print(encoder)
     # ------------
     # model
     # ------------
+    if args.supervised:
+        print("IM SUPERVISED", args.supervised)
+        
+        
+        
     if args.supervised:
         module = SupervisedLearning(args, encoder, output_dim=train_dataset.n_classes)
     else:
         module = ContrastiveLearning(args, encoder)
 
+
+
+#     print(module.encoder)
     logger = TensorBoardLogger("runs", name="CLMRv2-{}".format(args.dataset))
     if args.checkpoint_path:
-        module = module.load_from_checkpoint(
-            args.checkpoint_path, encoder=encoder, output_dim=train_dataset.n_classes
+        
+        
+        
+        state_dict = torch.load(args.checkpoint_path, map_location="cuda:0")#args.device)
+        
+        
+        
+#         for key in state_dict:
+#             print(key, state_dict[key])
+#             break
+
+
+
+        module.model.load_state_dict(state_dict)
+    
+#         print(module.summarize(-1))
+
+
+#         for param in module.encoder.parameters():
+#             print(param.data, param)
+#             break
+    
+#         module = ContrastiveLearning.load_from_checkpoint(
+#             args.checkpoint_path, encoder=encoder, output_dim=train_dataset.n_classes
+#         )
+
+
+#         print(module['state_dict'])
+
+        if args.supervised:
+            early_stopping = EarlyStopping(monitor="Valid/loss", patience=20)
+        else:
+            early_stopping = None
+
+        trainer = Trainer.from_argparse_args(
+            args,
+            logger=logger,
+            sync_batchnorm=True,
+            max_epochs=-1,#no limit args.max_epochs,
+            log_every_n_steps=1,
+            check_val_every_n_epoch=1,
+            accelerator='gpu'
         )
+#         print(args)
+        trainer.fit(module, train_loader)
 
     else:
         # ------------
@@ -144,11 +196,12 @@ if __name__ == "__main__":
             args,
             logger=logger,
             sync_batchnorm=True,
-            max_epochs=args.max_epochs,
-            log_every_n_steps=10,
+            max_epochs=-1,#no limit args.max_epochs,
+            log_every_n_steps=1,
             check_val_every_n_epoch=1,
-            accelerator=args.accelerator,
+            accelerator='gpu', 
         )
+        
         trainer.fit(module, train_loader, valid_loader)
 
     if args.supervised:
